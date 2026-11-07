@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>Brigada Gallery</title>
+<style>
+  :root {
+    --bg: #eeeeee;
+    --line: #dedede;
+    --text: #b4b4b4;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  #stage {
+    position: absolute; left: 50%; top: 50%;
+    width: 1920px; height: 1080px;
+    background: var(--bg);
+    font-family: "Inter", -apple-system, "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .line { position: absolute; background: var(--line); }
+  /* Lijnen lopen door tot buiten het canvas, zodat ze altijd tot de schermrand gaan */
+  .h { left: -4000px; width: calc(100% + 8000px); height: 1px; }
+  .v { top: -4000px; height: calc(100% + 8000px); width: 1px; }
+  #box { position: absolute; overflow: hidden; background: #000; }
+  #box img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .label { position: absolute; color: var(--text); font-size: 18px; font-weight: 500; white-space: nowrap; letter-spacing: 0.01em; }
+
+  /* Mobiel: labels en lijnen meeschalen met het kleinere scherm */
+  #stage.mobile .label { font-size: 40px; }
+  #stage.mobile .h { height: 2px; }
+  #stage.mobile .v { width: 2px; }
+
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="line h" id="lt"></div>
+  <div class="line h" id="lb"></div>
+  <div class="line v" id="ll"></div>
+  <div class="line v" id="lr"></div>
+  <div id="box"><img id="imgA" alt=""><img id="imgB" alt=""></div>
+  <div class="label" id="idx"></div>
+  <div class="label" id="caption"></div>
+</div>
+
+
+<script>
+// ── Instellingen ─────────────────────────────────────────────
+let W = 1920, H = 1080;   // desktop: liggend canvas; mobiel: 1080 × 1920 staand
+const isMobile = () => location.search.includes("mobile") || innerWidth < 768 || innerWidth < innerHeight;
+const AREA = 720 * 405;   // basis-oppervlakte van het kader bij size 100
+const INTRO_HOLD = 1.2;   // seconden dat 01 groot staat bij de start
+const INTRO_SHRINK = 1.1; // seconden krimpen naar het kader
+const DEFAULTS = {
+  intro: 233,             // grootte van 01 bij de start (100 = normaal kader)
+  speed: 90,             // algemene snelheid in % (200 = dubbel zo snel)
+  hold: 690,              // ms stilstaan per beeld
+  morph: 380,             // ms overgang naar het volgende beeld
+  sizes: [100, 168, 181, 165, 165, 152, 154, 197, 99, 157, 175, 160], // per beeld (01 t/m 12)
+  order: [0, 1, 2, 4, 8, 5, 3, 6, 7, 9, 10, 11],                       // volgorde (0 = 01.png)
+};
+const SLIDES = [
+  { src: "img/01.png", mobile: "img/01-mobile.png", caption: "In motion" },
+  { src: "img/02.png", caption: "Embroidered" },
+  { src: "img/03.png", mobile: "img/03-mobile.png", caption: "Pinstripe" },
+  { src: "img/04.png", caption: "Matchday" },
+  { src: "img/05.png", caption: "Taking shape" },
+  { src: "img/06.png", caption: "Off the pitch" },
+  { src: "img/07.png", caption: "Number on the back" },
+  { src: "img/08.png", caption: "Close up" },
+  { src: "img/09.png", caption: "The G" },
+  { src: "img/10.png", caption: "Bringing it together" },
+  { src: "img/11.png", caption: "Sharp beats loud" },
+  { src: "img/12.png", caption: "Number ten" },
+];
+// ─────────────────────────────────────────────────────────────
+
+const STORE = "brigada-gallery-dev";
+const settings = (() => {
+  const s = structuredClone(DEFAULTS);
+  // Nieuwe foto's: standaardgrootte en achteraan in de volgorde; verdwenen foto's eruit
+  s.sizes = s.sizes.slice(0, SLIDES.length);
+  for (let i = s.sizes.length; i < SLIDES.length; i++) s.sizes.push(DEFAULTS.sizes[i] ?? 100);
+  if (!Array.isArray(s.order)) s.order = [];
+  s.order = s.order.filter((k, j, a) => k < SLIDES.length && a.indexOf(k) === j);
+  SLIDES.forEach((_, i) => { if (!s.order.includes(i)) s.order.push(i); });
+  return s;
+})();
+const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch {} };
+
+const INTRO = INTRO_HOLD + INTRO_SHRINK;
+let HOLD, MORPH, STEP, DURATION;
+function applyTiming() {
+  HOLD = settings.hold / 1000; MORPH = Math.max(settings.morph, 1) / 1000;
+  STEP = HOLD + MORPH; DURATION = SLIDES.length * STEP;
+  window.DURATION = INTRO + DURATION;
+}
+applyTiming();
+const $ = id => document.getElementById(id);
+const stage = $("stage"), box = $("box"), A = $("imgA"), B = $("imgB");
+
+const easeInOutQuint = t => t < .5 ? 16*t*t*t*t*t : 1 - Math.pow(-2*t + 2, 5) / 2;
+const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Verhouding uit de echte afmetingen van elke foto
+const ratioOf = src => new Promise(res => {
+  const im = new Image();
+  im.onload = () => res(im.naturalWidth / im.naturalHeight);
+  im.onerror = () => res(1);
+  im.src = src;
+});
+const loaded = Promise.all(SLIDES.map(async s => {
+  s.rDesk = await ratioOf(s.src);
+  s.rMob = s.mobile ? await ratioOf(s.mobile) : s.rDesk;
+}));
+// Mobiel: eigen beeld (indien aanwezig) en verhouding
+let mobile = false;
+const srcOf = s => mobile && s.mobile ? s.mobile : s.src;
+const rOf = s => mobile ? s.rMob : s.rDesk;
+
+// Kadergrootte voor ratio r en size (in %): size schaalt breedte én hoogte
+function frame(r, size) {
+  const k = size / 100;
+  let w = Math.sqrt(AREA * r) * k, h = w / r;
+  // Nooit buiten het canvas (vooral op mobiel)
+  const fitK = Math.min(1, (W * 0.92) / w, (H * 0.82) / h);
+  return { w: w * fitK, h: h * fitK };
+}
+
+let activeIndex = 0;
+function render(T) {
+  // Intro: 01 groot, daarna krimpen naar het kader; daarna loopt de gallery
+  const q = T < INTRO_HOLD ? 0 : T < INTRO ? easeInOutQuint((T - INTRO_HOLD) / INTRO_SHRINK) : 1;
+  let t = T < INTRO ? 0 : T - INTRO;
+  t = ((t % DURATION) + DURATION) % DURATION;
+  const i = Math.floor(t / STEP);
+  const local = t - i * STEP;
+  const ni = (i + 1) % SLIDES.length;
+  const ki = settings.order[i], kn = settings.order[ni];   // originele index van de foto
+  const cur = SLIDES[ki], next = SLIDES[kn];
+  const p = local < HOLD ? 0 : easeInOut((local - HOLD) / MORPH);
+
+  // Ratio en grootte morphen (log-ruimte = gelijkmatig gevoel)
+  const r = Math.exp(lerp(Math.log(rOf(cur)), Math.log(rOf(next)), p));
+  const size = Math.exp(lerp(Math.log(settings.sizes[ki]), Math.log(settings.sizes[kn]), p));
+  const introSize = Math.exp(lerp(Math.log(settings.intro), Math.log(size), q));
+  const { w: bw, h: bh } = frame(r, introSize);
+  const x = (W - bw) / 2, y = (H - bh) / 2;
+
+  for (const id of ["idx", "caption"]) $(id).style.opacity = q;
+  Object.assign(box.style, { left: x + "px", top: y + "px", width: bw + "px", height: bh + "px" });
+  const lw = mobile ? 2 : 1;
+  $("lt").style.top = y + "px";       $("lb").style.top = (y + bh - lw) + "px";
+  $("ll").style.left = x + "px";      $("lr").style.left = (x + bw - lw) + "px";
+
+  // Beelden crossfaden tijdens de morph
+  if (A.getAttribute("src") !== srcOf(cur)) A.src = srcOf(cur);
+  if (B.getAttribute("src") !== srcOf(next)) B.src = srcOf(next);
+  B.style.opacity = p;
+
+  // Index links van caption
+  activeIndex = p < .5 ? i : ni;
+  const idx = $("idx");
+  idx.textContent = String(activeIndex + 1);
+  const u = mobile ? 2.2 : 1;   // labelschaal
+  idx.style.left = (x - 26 * u) + "px"; idx.style.top = (y + bh + 14 * u) + "px";
+
+  // Caption: volgende tekst typt in tijdens de morph
+  const cap = $("caption");
+  cap.textContent = p > 0 ? next.caption.slice(0, Math.round(next.caption.length * Math.min(1, p * 1.4))) : cur.caption;
+  cap.style.left = (x + 12 * u) + "px"; cap.style.top = (y + bh + 14 * u) + "px";
+}
+
+function fit() {
+  mobile = isMobile();
+  [W, H] = mobile ? [1080, 1920] : [1920, 1080];
+  stage.style.width = W + "px"; stage.style.height = H + "px";
+  stage.classList.toggle("mobile", mobile);
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  stage.style.transform = `translate(-50%,-50%) scale(${s})`;
+}
+addEventListener("resize", fit); fit();
+
+// ── Klok ──
+let clock = 0, playing = true, last = null, hovered = false;
+const exporting = location.search.includes("export");
+
+// Hover over het beeld = pauze
+box.addEventListener("pointerenter", () => hovered = true);
+box.addEventListener("pointerleave", () => hovered = false);
+
+// Voor export: ?export → geen autoplay, window.renderAt(t) per frame
+window.renderAt = t => render(t);
+window.ready = loaded;
+loaded.then(() => {
+  if (exporting) { render(0); return; }
+  (function loop(now) {
+    if (last !== null && playing && !hovered) clock += (now - last) / 1000 * settings.speed / 100;
+    last = now;
+    render(clock);
+    requestAnimationFrame(loop);
+  })(performance.now());
+});
+</script>
+</body>
+</html>

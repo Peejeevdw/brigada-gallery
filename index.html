@@ -30,6 +30,21 @@
   #stage.mobile .h { height: 2px; }
   #stage.mobile .v { width: 2px; }
 
+  /* Play/pauze-knop rechtsonder */
+  #pp {
+    position: fixed; right: 20px; bottom: 20px; z-index: 8;
+    width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%;
+    display: grid; place-items: center; cursor: pointer;
+    background: transparent; color: var(--text);
+    transition: color .15s ease, background-color .15s ease;
+  }
+  #pp:hover { color: #777; background: rgba(0,0,0,.04); }
+  #pp:focus-visible { outline: 2px solid #999; outline-offset: 2px; }
+  #pp svg { width: 14px; height: 14px; display: block; }
+  #pp .i-play { display: none; }
+  #pp.paused .i-play { display: block; }
+  #pp.paused .i-pause { display: none; }
+
 </style>
 </head>
 <body>
@@ -43,6 +58,10 @@
   <div class="label" id="caption"></div>
 </div>
 
+<button id="pp" aria-label="Pauzeer animatie">
+  <svg class="i-pause" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><rect x="2.5" y="1.5" width="3" height="11" rx="1"/><rect x="8.5" y="1.5" width="3" height="11" rx="1"/></svg>
+  <svg class="i-play" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M3.5 2.2v9.6a.8.8 0 0 0 1.2.7l8-4.8a.8.8 0 0 0 0-1.4l-8-4.8a.8.8 0 0 0-1.2.7z"/></svg>
+</button>
 
 <script>
 // ── Instellingen ─────────────────────────────────────────────
@@ -183,12 +202,22 @@ function fit() {
 addEventListener("resize", fit); fit();
 
 // ── Klok ──
-let clock = 0, playing = true, last = null, hovered = false;
+let clock = 0, playing = true, last = null;
 const exporting = location.search.includes("export");
 
-// Hover over het beeld = pauze
-box.addEventListener("pointerenter", () => hovered = true);
-box.addEventListener("pointerleave", () => hovered = false);
+// ── Einde dev tool ──
+
+// Play/pauze-knop
+const pp = $("pp");
+pp.onclick = () => {
+  playing = !playing;
+  const b = document.getElementById("bPlay"); if (b) b.textContent = playing ? "Pauze" : "Speel";
+};
+function syncPP() {
+  pp.classList.toggle("paused", !playing);
+  pp.setAttribute("aria-label", playing ? "Pauzeer animatie" : "Speel animatie");
+}
+if (exporting) pp.remove();
 
 // Voor export: ?export → geen autoplay, window.renderAt(t) per frame
 window.renderAt = t => render(t);
@@ -196,9 +225,10 @@ window.ready = loaded;
 loaded.then(() => {
   if (exporting) { render(0); return; }
   (function loop(now) {
-    if (last !== null && playing && !hovered) clock += (now - last) / 1000 * settings.speed / 100;
+    if (last !== null && playing) clock += (now - last) / 1000 * settings.speed / 100;
     last = now;
     render(clock);
+    syncPP();
     requestAnimationFrame(loop);
   })(performance.now());
 });
